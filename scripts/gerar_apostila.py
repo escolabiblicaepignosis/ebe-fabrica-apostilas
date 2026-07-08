@@ -2,6 +2,10 @@
 """
 Gerador automático de apostilas EBE usando Gemini AI.
 Gera apostilas de 15-20 páginas e faz upload directo para Google Drive.
+
+Uso:
+  python scripts/gerar_apostila.py              # Gerar apostilas
+  python scripts/gerar_apostila.py --test-drive  # Testar conexão ao Drive
 """
 
 import json
@@ -29,7 +33,6 @@ BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "5"))
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 DELAY_ENTRE_APOSTILAS = 90
 
-# Paleta EBE
 from docx.shared import RGBColor, Pt, Cm
 COR_PRIMARIA   = RGBColor(0x1B, 0x3A, 0x5C)
 COR_SECUNDARIA = RGBColor(0x2E, 0x7D, 0x4F)
@@ -43,26 +46,133 @@ LOGO_PATH  = os.path.join(ASSETS_DIR, "logo_ebe.png")
 
 
 # ──────────────────────────────────────────────────────────────
-# GOOGLE DRIVE UPLOAD
+# GOOGLE DRIVE
 # ──────────────────────────────────────────────────────────────
 _drive_service = None
+
+def validar_credenciais():
+    """Valida se as credenciais do Drive são JSON válido."""
+    if not CREDENTIALS_JSON:
+        return False, "GOOGLE_DRIVE_CREDENTIALS vazio"
+    try:
+        creds = json.loads(CREDENTIALS_JSON)
+        if "type" not in creds:
+            return False, "JSON não contém 'type' (não é service account?)"
+        if creds.get("type") != "service_account":
+            return False, f"type='{creds.get('type')}' (esperado: service_account)"
+        if "client_email" not in creds:
+            return False, "JSON não contém 'client_email'"
+        return True, f"OK — {creds.get('client_email', 'N/A')}"
+    except json.JSONDecodeError as e:
+        return False, f"JSON inválido: {e}"
+
 
 def get_drive_service():
     global _drive_service
     if _drive_service:
         return _drive_service
-    log("    🔑 Autenticando no Google Drive...")
+
+    log("    🔑 A autenticar no Google Drive...")
+    ok, msg = validar_credenciais()
+    if not ok:
+        raise RuntimeError(f"Credenciais inválidas: {msg}")
+
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
-    if not CREDENTIALS_JSON:
-        raise RuntimeError("GOOGLE_DRIVE_CREDENTIALS não definido")
-    creds = json.loads(CREDENTIALS_JSON)
+
+    creds_info = json.loads(CREDENTIALS_JSON)
     credentials = service_account.Credentials.from_service_account_info(
-        creds, scopes=["https://www.googleapis.com/auth/drive.file"]
+        creds_info, scopes=["https://www.googleapis.com/auth/drive.file"]
     )
     _drive_service = build("drive", "v3", credentials=credentials)
     log("    ✅ Autenticado no Google Drive")
     return _drive_service
+
+
+def test_drive_connection():
+    """Testa a conexão ao Google Drive e à pasta mãe."""
+    log("=" * 60)
+    log("  TESTE DE CONEXÃO — Google Drive")
+    log("=" * 60)
+
+    # 1. Validar credenciais
+    log("\n📋 1. Validando credenciais...")
+    ok, msg = validar_credenciais()
+    log(f"   {'✅' if ok else '❌'} {msg}")
+    if not ok:
+        return False
+
+    # 2. Autenticar
+    log("\n📋 2. Autenticando...")
+    try:
+        service = get_drive_service()
+    except Exception as e:
+        log(f"   ❌ Falha na autenticação: {e}")
+        return False
+
+    # 3. Verificar pasta mãe
+    log(f"\n📋 3. Verificando pasta mãe: {DRIVE_FOLDER_ID}...")
+    if not DRIVE_FOLDER_ID:
+        log("   ❌ GOOGLE_DRIVE_FOLDER_ID vazio")
+        return False
+
+    try:
+        folder = service.files().get(
+            fileId=DRIVE_FOLDER_ID,
+            fields="id, name, mimeType"
+        ).execute()
+        log(f"   ✅ Pasta encontrada: '{folder.get('name')}' (ID: {folder.get('id')})")
+    except Exception as e:
+        log(f"   ❌ Pasta não encontrada ou sem acesso: {e}")
+        log(f"   💡 Verifique se a service account tem acesso à pasta {DRIVE_FOLDER_ID}")
+        return False
+
+    # 4. Testar criação de subpasta
+    log("\n📋 4. Testando criação de subpasta...")
+    try:
+        test_folder = service.files().create(
+            body={
+                'name': '_teste_conexao_EBE',
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [DRIVE_FOLDER_ID]
+            },
+            fields='id, name'
+        ).execute()
+        log(f"   ✅ Subpasta criada: '{test_folder['name']}' (ID: {test_folder['id']})")
+
+        # Limpar subpasta de teste
+        service.files().delete(fileId=test_folder['id']).execute()
+        log(f"   🧹 Subpasta de teste removida")
+    except Exception as e:
+        log(f"   ❌ Falha ao criar subpasta: {e}")
+        return False
+
+    # 5. Testar upload de ficheiro pequeno
+    log("\n📋 5. Testando upload de ficheiro...")
+    try:
+        import tempfile
+        from googleapiclient.http import MediaInMemoryUpload
+
+        test_content = b"Teste de conexao EBE - pode ser apagado"
+        media = MediaInMemoryUpload(test_content, mimetype='text/plain')
+        test_file = service.files().create(
+            body={'name': '_teste_upload_EBE.txt', 'parents': [DRIVE_FOLDER_ID]},
+            media_body=media, fields='id, name'
+        ).execute()
+        log(f"   ✅ Ficheiro enviado: '{test_file['name']}' (ID: {test_file['id']})")
+
+        # Limpar
+        service.files().delete(fileId=test_file['id']).execute()
+        log(f"   🧹 Ficheiro de teste removido")
+    except Exception as e:
+        log(f"   ❌ Falha no upload: {e}")
+        log(f"   {traceback.format_exc()}")
+        return False
+
+    log(f"\n{'=' * 60}")
+    log("  ✅ TODOS OS TESTES PASSARAM — Drive pronto para upload")
+    log(f"{'=' * 60}")
+    return True
 
 
 def sanitizar_nome(nome):
@@ -105,7 +215,6 @@ def garantir_caminho(service, parent_id, partes):
 def upload_para_drive(file_path, meta):
     """Faz upload de um ficheiro .docx para o Google Drive."""
     log(f"    📂 Ficheiro: {file_path}")
-    log(f"    📂 Existe: {os.path.exists(file_path)}")
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Ficheiro não encontrado: {file_path}")
@@ -137,7 +246,7 @@ def upload_para_drive(file_path, meta):
         log(f"    📂 Folder ID: {folder_id}")
 
     fname = os.path.basename(file_path)
-    log(f"    📤 Upload: {fname} → {folder_id}")
+    log(f"    📤 A enviar: {fname} → folder {folder_id}")
 
     media = MediaFileUpload(
         file_path,
@@ -149,7 +258,7 @@ def upload_para_drive(file_path, meta):
         media_body=media, fields='id, name, webViewLink'
     ).execute()
 
-    log(f"    ✅ Upload completo! ID: {file['id']}")
+    log(f"    ✅ Upload OK! ID: {file['id']}")
     return file
 
 
@@ -387,12 +496,7 @@ def gerar_conteudo_gemini(meta):
     import google.generativeai as genai
     log(f"  📡 Gemini API ({MODEL_NAME})...")
     genai.configure(api_key=GEMINI_API_KEY)
-
-    # BUG FIX: passar system_instruction ao modelo
-    model = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        system_instruction=SYSTEM_PROMPT,
-    )
+    model = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=SYSTEM_PROMPT)
 
     prompt = (
         f"Escreva o conteúdo completo de uma apostila académica cristã.\n\n"
@@ -419,9 +523,7 @@ def gerar_conteudo_gemini(meta):
     response = model.generate_content(
         prompt,
         generation_config=genai.types.GenerationConfig(
-            temperature=0.8,
-            max_output_tokens=16384,
-            top_p=0.95,
+            temperature=0.8, max_output_tokens=16384, top_p=0.95,
         ),
     )
 
@@ -496,6 +598,11 @@ def obter_proximas_apostilas(mapa, estado, batch_size):
 # MAIN
 # ──────────────────────────────────────────────────────────────
 def main():
+    # Modo de teste do Drive
+    if "--test-drive" in sys.argv:
+        ok = test_drive_connection()
+        sys.exit(0 if ok else 1)
+
     log("=" * 60)
     log("  ESCOLA BÍBLICA EPIGNÓSIS — Gerador de Apostilas")
     log(f"  Modelo: {MODEL_NAME} | Batch: {BATCH_SIZE}")
@@ -506,10 +613,15 @@ def main():
         sys.exit(1)
     log(f"✅ GEMINI_API_KEY: {len(GEMINI_API_KEY)} chars")
 
-    drive_ok = bool(DRIVE_FOLDER_ID and CREDENTIALS_JSON)
-    if drive_ok:
-        log(f"✅ Google Drive configurado (pasta: {DRIVE_FOLDER_ID[:12]}...)")
-        log(f"   CREDENTIALS: {len(CREDENTIALS_JSON)} chars")
+    # Diagnóstico detalhado do Drive
+    drive_ok = False
+    if DRIVE_FOLDER_ID and CREDENTIALS_JSON:
+        ok_creds, msg_creds = validar_credenciais()
+        log(f"{'✅' if ok_creds else '❌'} Credenciais: {msg_creds}")
+        log(f"✅ DRIVE_FOLDER_ID: {DRIVE_FOLDER_ID[:12]}...")
+        drive_ok = ok_creds
+        if not drive_ok:
+            log("⚠️  Credenciais inválidas — a gerar SEM upload")
     else:
         log(f"⚠️  Drive não configurado (FOLDER_ID={bool(DRIVE_FOLDER_ID)}, CREDS={bool(CREDENTIALS_JSON)})")
 
@@ -568,12 +680,12 @@ def main():
                 try:
                     drive_info = upload_para_drive(output_path, meta)
                     if drive_info:
-                        log(f"  ✅ Drive: {drive_info.get('webViewLink', drive_info['id'])}")
+                        log(f"  ✅ Drive OK: {drive_info.get('webViewLink', drive_info['id'])}")
                 except Exception as ue:
-                    log(f"  ❌ Upload ERRO: {ue}")
+                    log(f"  ❌ UPLOAD FALHOU: {type(ue).__name__}: {ue}")
                     log(f"  {traceback.format_exc()}")
             else:
-                log(f"  ⚠️  Upload ignorado (Drive não configurado)")
+                log(f"  ⚠️  Upload ignorado (Drive não disponível)")
 
             # 4. Actualizar estado
             entry = {
@@ -597,7 +709,7 @@ def main():
             log(f"  💾 Estado: {estado['total_gerado']}/{mapa['total_apostilas']}")
 
         except Exception as e:
-            log(f"  ❌ ERRO: {e}")
+            log(f"  ❌ ERRO: {type(e).__name__}: {e}")
             log(f"  {traceback.format_exc()}")
             falhadas.append({"id": meta["id"], "erro": str(e)})
             estado.setdefault("falhadas", []).append(meta["id"])
@@ -622,6 +734,7 @@ def main():
 
     if not geradas and falhadas:
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
