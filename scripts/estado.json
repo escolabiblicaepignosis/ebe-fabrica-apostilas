@@ -1,10 +1,6 @@
 {
-  "concluidas": [
-    "APO-0001"
-  ],
-  "falhadas": [
-    "APO-0002"
-  ],
-  "total_gerado": 1,
+  "concluidas": [],
+  "falhadas": [],
+  "total_gerado": 0,
   "uploads": []
 }

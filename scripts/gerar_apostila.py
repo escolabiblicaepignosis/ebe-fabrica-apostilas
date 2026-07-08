@@ -401,41 +401,78 @@ ESTRUTURA OBRIGATÓRIA:
 
 
 def gerar_conteudo_gemini(meta):
-    import google.generativeai as genai
+    import google.genai as genai
     log(f"  📡 Gemini API ({MODEL_NAME})...")
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=SYSTEM_PROMPT)
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
-    prompt = f"""Gere o conteúdo integral da seguinte apostila:
+    prompt = f"""Escreva o conteúdo completo de uma apostila académica cristã em português (pt-PT/Angola).
 
-- Nível: {meta['nivel']}
+CONTEXTO:
 - Instituto: {meta['instituto']}
 - Escola: {meta['escola']}
-- Curso: {meta['curso']} (Carga horária: {meta.get('carga_horaria', 'N/D')})
+- Curso: {meta['curso']} ({meta.get('carga_horaria', 'N/D')})
 - Módulo: {meta['modulo']}
-- Apostila N.º: {meta['numero_apostila']} — {meta['titulo']}
+- Apostila: {meta['titulo']}
 - Código: {meta['codigo']}
 
-Gere em Markdown. Não inclua capa nem marco filosófico — apenas da FICHA TÉCNICA até ANOTAÇÕES PESSOAIS.
+INSTRUÇÕES:
+- Escreva em estilo académico formal mas acessível
+- Use referências bíblicas (livro, capítulo, versículo) mas PARAFRASEIE o texto — não cite versículos longos palavra por palavra
+- Para referências curtas (até 10 palavras), pode citar directamente
+- Para passagens longas, resuma e refira a referência
+- Inclua fundamentação teológica real e profunda
+- Use termos gregos/hebraicos quando relevante (com transliteração)
+- Escreva em Markdown (## títulos, ### subtítulos, - listas, **negrito**, > citações curtas)
+
+ESTRUTURA OBRIGATÓRIA (não altere a ordem):
+## FICHA TÉCNICA
+## SUMÁRIO
+## APRESENTAÇÃO DA APOSTILA
+## OBJECTIVOS DE APRENDIZAGEM (Conhecer 40%, Crer 20%, Viver 20%, Servir 20%)
+## VERSÍCULO-CHAVE
+## TEXTO-BASE PARA LEITURA
+## 1. INTRODUÇÃO (2-3 parágrafos)
+## 2. DESENVOLVIMENTO DO CONCEITO CENTRAL
+### 2.1 Fundamentos bíblicos
+### 2.2 Desenvolvimento temático
+### 2.3 Aprofundamento
+### 2.4 Dúvidas comuns
+### 2.5 Quadro de Destaque
+## 3. APLICAÇÃO PRÁTICA (5 áreas: pessoal, família, igreja, sociedade, ministério)
+## 4. SÍNTESE E CONCLUSÃO
+## EXERCÍCIOS DE REVISÃO (3 blocos: Compreensão, Reflexão, Ministério)
+## ESTUDO BÍBLICO COMPLEMENTAR
+## PARA A PRÓXIMA APOSTILA
+## GLOSSÁRIO (5-10 termos)
+## BIBLIOGRAFIA RECOMENDADA (5-8 referências)
+## ANOTAÇÕES PESSOAIS
 """
 
     log(f"  📤 Prompt: {len(prompt)} chars")
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.7, max_output_tokens=16384, top_p=0.9,
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=genai.types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.8,
+            max_output_tokens=16384,
+            top_p=0.95,
         ),
     )
 
     if not response:
         raise RuntimeError("Resposta vazia do Gemini")
 
+    if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
+        log(f"  ⚠️  Feedback: {response.prompt_feedback}")
+
     try:
         texto = response.text
     except Exception as e:
         log(f"  ❌ response.text erro: {e}")
-        if hasattr(response, 'candidates'):
-            log(f"  Candidates: {response.candidates}")
+        if hasattr(response, 'candidates') and response.candidates:
+            for c in response.candidates:
+                log(f"  Candidate finish_reason: {getattr(c, 'finish_reason', 'N/A')}")
         raise RuntimeError(f"Sem texto: {e}")
 
     if not texto or len(texto) < 100:
