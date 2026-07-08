@@ -72,8 +72,9 @@ jobs:
       - name: "📝 Gerar apostilas com Gemini"
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: python scripts/gerar_apostila.py
-
       - name: "☁️ Upload para Google Drive"
         if: success()
         continue-on-error: true
