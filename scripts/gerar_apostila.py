@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Gerador automático de apostilas EBE usando Gemini AI.
-Gera apostilas de 15-20 páginas seguindo o modelo institucional da EBE.
+Gera apostilas de 15-20 páginas e faz upload directo para Google Drive.
 """
 
 import json
@@ -13,37 +13,133 @@ import unicodedata
 import traceback
 
 def log(msg):
-    """Log com flush imediato (visível no GitHub Actions)."""
     print(msg, flush=True)
 
 # ──────────────────────────────────────────────────────────────
 # CONFIGURAÇÃO
 # ──────────────────────────────────────────────────────────────
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-MAPA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mapa_apostilas.json")
-ESTADO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "estado.json")
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "output")
+DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
+CREDENTIALS_JSON = os.environ.get("GOOGLE_DRIVE_CREDENTIALS", "")
+MAPA_PATH = os.path.join(SCRIPT_DIR, "mapa_apostilas.json")
+ESTADO_PATH = os.path.join(SCRIPT_DIR, "estado.json")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "output")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "5"))
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-DELAY_ENTRE_APOSTILAS = 90  # segundos
+DELAY_ENTRE_APOSTILAS = 90
 
 # Paleta EBE
 from docx.shared import RGBColor, Pt, Cm
 COR_PRIMARIA   = RGBColor(0x1B, 0x3A, 0x5C)
 COR_SECUNDARIA = RGBColor(0x2E, 0x7D, 0x4F)
-COR_TERCIARIA  = RGBColor(0xC9, 0xA1, 0x4B)
 COR_TEXTO      = RGBColor(0x1A, 0x1A, 0x1A)
 COR_CITACAO    = RGBColor(0x55, 0x55, 0x55)
 HEX_PRIMARIA   = "1B3A5C"
 HEX_SECUNDARIA = "2E7D4F"
 FONTE          = "Garamond"
 
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "estilos", "_assets")
+ASSETS_DIR = os.path.join(SCRIPT_DIR, "..", "src", "estilos", "_assets")
 LOGO_PATH  = os.path.join(ASSETS_DIR, "logo_ebe.png")
 
 
 # ──────────────────────────────────────────────────────────────
-# DOCX UTILITIES
+# GOOGLE DRIVE UPLOAD
+# ──────────────────────────────────────────────────────────────
+_drive_service = None
+
+def get_drive_service():
+    global _drive_service
+    if _drive_service:
+        return _drive_service
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    if not CREDENTIALS_JSON:
+        raise RuntimeError("GOOGLE_DRIVE_CREDENTIALS não definido")
+    creds = json.loads(CREDENTIALS_JSON)
+    credentials = service_account.Credentials.from_service_account_info(
+        creds, scopes=["https://www.googleapis.com/auth/drive.file"]
+    )
+    _drive_service = build("drive", "v3", credentials=credentials)
+    return _drive_service
+
+
+def sanitizar_nome(nome):
+    for c in ['"', "'", '/', '\\', '|', ':', '*', '?', '<', '>']:
+        nome = nome.replace(c, '')
+    return nome.strip()[:100]
+
+
+_pasta_cache = {}
+
+def encontrar_ou_criar_pasta(service, nome, parent_id):
+    nome = sanitizar_nome(nome)
+    query = (
+        f"name = '{nome}' and '{parent_id}' in parents and "
+        f"mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    )
+    results = service.files().list(
+        q=query, spaces='drive', fields='files(id, name)', pageSize=10
+    ).execute()
+    files = results.get('files', [])
+    if files:
+        return files[0]['id']
+    folder = service.files().create(
+        body={'name': nome, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]},
+        fields='id'
+    ).execute()
+    log(f"    📁 Pasta criada: {nome}")
+    return folder['id']
+
+
+def garantir_caminho(service, parent_id, partes):
+    current_id = parent_id
+    for parte in partes:
+        if parte:
+            current_id = encontrar_ou_criar_pasta(service, parte, current_id)
+    return current_id
+
+
+def upload_para_drive(file_path, meta):
+    """Faz upload de um ficheiro .docx para o Google Drive."""
+    if not DRIVE_FOLDER_ID:
+        log("    ⚠️  GOOGLE_DRIVE_FOLDER_ID não definido — a saltar upload")
+        return None
+
+    from googleapiclient.http import MediaFileUpload
+
+    service = get_drive_service()
+
+    partes = [
+        sanitizar_nome(meta.get("instituto", "Outros")),
+        sanitizar_nome(meta.get("escola", "Geral")),
+        sanitizar_nome(meta.get("curso", "Curso")),
+        sanitizar_nome(f"Módulo {meta.get('modulo', '1')}"),
+    ]
+    cache_key = " > ".join(partes)
+
+    if cache_key in _pasta_cache:
+        folder_id = _pasta_cache[cache_key]
+    else:
+        folder_id = garantir_caminho(service, DRIVE_FOLDER_ID, partes)
+        _pasta_cache[cache_key] = folder_id
+
+    fname = os.path.basename(file_path)
+    media = MediaFileUpload(
+        file_path,
+        mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        resumable=True
+    )
+    file = service.files().create(
+        body={'name': fname, 'parents': [folder_id]},
+        media_body=media, fields='id, name, webViewLink'
+    ).execute()
+
+    return file
+
+
+# ──────────────────────────────────────────────────────────────
+# DOCX
 # ──────────────────────────────────────────────────────────────
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -104,17 +200,12 @@ def inserir_logo(doc, caminho=None, largura_cm=5.5):
 def add_texto(doc, texto, font_size=12, bold=False, italic=False,
               color=None, alignment=None, indent_cm=0):
     p = doc.add_paragraph()
-    if alignment:
-        p.alignment = alignment
-    if indent_cm:
-        p.paragraph_format.left_indent = Cm(indent_cm)
+    if alignment: p.alignment = alignment
+    if indent_cm: p.paragraph_format.left_indent = Cm(indent_cm)
     r = p.add_run(texto)
-    r.font.name = FONTE
-    r.font.size = Pt(font_size)
-    r.font.bold = bold
-    r.font.italic = italic
-    if color:
-        r.font.color.rgb = color
+    r.font.name = FONTE; r.font.size = Pt(font_size)
+    r.font.bold = bold; r.font.italic = italic
+    if color: r.font.color.rgb = color
     return p
 
 
@@ -204,8 +295,7 @@ def construir_docx(meta, conteudo_md, output_path):
     # CONTEÚDO
     for linha in conteudo_md.strip().split('\n'):
         linha = linha.rstrip()
-        if not linha.strip():
-            continue
+        if not linha.strip(): continue
         if linha.startswith('## '):
             texto = linha[3:].strip()
             p = doc.add_paragraph()
@@ -312,15 +402,9 @@ ESTRUTURA OBRIGATÓRIA:
 
 def gerar_conteudo_gemini(meta):
     import google.generativeai as genai
-
-    log(f"  📡 Configurando Gemini API...")
+    log(f"  📡 Gemini API ({MODEL_NAME})...")
     genai.configure(api_key=GEMINI_API_KEY)
-
-    log(f"  🤖 Criando modelo: {MODEL_NAME}")
-    model = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        system_instruction=SYSTEM_PROMPT,
-    )
+    model = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=SYSTEM_PROMPT)
 
     prompt = f"""Gere o conteúdo integral da seguinte apostila:
 
@@ -335,39 +419,31 @@ def gerar_conteudo_gemini(meta):
 Gere em Markdown. Não inclua capa nem marco filosófico — apenas da FICHA TÉCNICA até ANOTAÇÕES PESSOAIS.
 """
 
-    log(f"  📤 Enviando prompt para Gemini ({len(prompt)} chars)...")
+    log(f"  📤 Prompt: {len(prompt)} chars")
     response = model.generate_content(
         prompt,
         generation_config=genai.types.GenerationConfig(
-            temperature=0.7,
-            max_output_tokens=16384,
-            top_p=0.9,
+            temperature=0.7, max_output_tokens=16384, top_p=0.9,
         ),
     )
 
-    # Verificar se a resposta é válida
     if not response:
         raise RuntimeError("Resposta vazia do Gemini")
-
-    if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
-        log(f"  ⚠️  Feedback: {response.prompt_feedback}")
 
     try:
         texto = response.text
     except Exception as e:
-        log(f"  ❌ Erro ao aceder a response.text: {e}")
+        log(f"  ❌ response.text erro: {e}")
         if hasattr(response, 'candidates'):
             log(f"  Candidates: {response.candidates}")
-        raise RuntimeError(f"Resposta do Gemini sem texto: {e}")
+        raise RuntimeError(f"Sem texto: {e}")
 
     if not texto or len(texto) < 100:
-        raise RuntimeError(f"Conteúdo muito curto ({len(texto) if texto else 0} chars)")
+        raise RuntimeError(f"Conteúdo curto: {len(texto) if texto else 0} chars")
 
-    # Limpar delimitadores markdown
     texto = re.sub(r'^```(?:markdown)?\s*\n?', '', texto, flags=re.MULTILINE)
     texto = re.sub(r'\n?```\s*$', '', texto, flags=re.MULTILINE)
-
-    log(f"  ✅ Resposta recebida: {len(texto)} caracteres")
+    log(f"  ✅ Resposta: {len(texto)} chars")
     return texto.strip()
 
 
@@ -378,7 +454,7 @@ def carregar_estado():
     if os.path.exists(ESTADO_PATH):
         with open(ESTADO_PATH, 'r', encoding='utf-8') as f:
             return json.load(f)
-    return {"concluidas": [], "falhadas": [], "total_gerado": 0}
+    return {"concluidas": [], "falhadas": [], "total_gerado": 0, "uploads": []}
 
 
 def salvar_estado(estado):
@@ -426,29 +502,31 @@ def main():
     log(f"  Modelo: {MODEL_NAME} | Batch: {BATCH_SIZE}")
     log("=" * 60)
 
-    # Verificações iniciais
     if not GEMINI_API_KEY:
-        log("❌ ERRO CRÍTICO: GEMINI_API_KEY não definida!")
-        log(f"   Tamanho da chave: {len(GEMINI_API_KEY)}")
+        log("❌ GEMINI_API_KEY não definida!")
         sys.exit(1)
+    log(f"✅ GEMINI_API_KEY: {len(GEMINI_API_KEY)} chars")
+
+    drive_ok = bool(DRIVE_FOLDER_ID and CREDENTIALS_JSON)
+    if drive_ok:
+        log(f"✅ Google Drive configurado (pasta: {DRIVE_FOLDER_ID[:12]}...)")
     else:
-        log(f"✅ GEMINI_API_KEY configurada ({len(GEMINI_API_KEY)} chars)")
+        log("⚠️  Google Drive não configurado — a gerar sem upload")
 
     if not os.path.exists(MAPA_PATH):
-        log(f"❌ ERRO CRÍTICO: Mapa não encontrado: {MAPA_PATH}")
+        log(f"❌ Mapa não encontrado: {MAPA_PATH}")
         sys.exit(1)
-    log(f"✅ Mapa encontrado: {MAPA_PATH}")
 
     mapa = carregar_mapa()
     estado = carregar_estado()
-    log(f"📊 Mapa: {mapa['total_apostilas']} apostilas | Estado: {len(estado.get('concluidas', []))} concluídas")
+    log(f"📊 Mapa: {mapa['total_apostilas']} | Concluídas: {len(estado.get('concluidas', []))}")
 
     proximas = obter_proximas_apostilas(mapa, estado, BATCH_SIZE)
     if not proximas:
-        log("🎉 Todas as apostilas já foram geradas!")
+        log("🎉 Todas geradas!")
         return
 
-    log(f"📋 Próximas {len(proximas)} apostilas:")
+    log(f"📋 Próximas {len(proximas)}:")
     for apo in proximas:
         log(f"   • {apo['codigo']} — {apo['titulo']}")
 
@@ -458,60 +536,66 @@ def main():
     for idx, meta in enumerate(proximas, 1):
         log(f"\n{'─' * 60}")
         log(f"  [{idx}/{len(proximas)}] {meta['codigo']} — {meta['titulo']}")
-        log(f"  Instituto: {meta['instituto']}")
-        log(f"  Escola: {meta['escola']}")
-        log(f"  Curso: {meta['curso']} | Módulo: {meta['modulo']}")
+        log(f"  {meta['instituto']} > {meta['escola']} > {meta['curso']}")
 
         try:
-            # Gerar conteúdo
+            # 1. Gerar conteúdo
             conteudo = gerar_conteudo_gemini(meta)
-
             if not conteudo or len(conteudo) < 500:
-                raise RuntimeError(f"Conteúdo muito curto: {len(conteudo) if conteudo else 0} chars")
+                raise RuntimeError(f"Conteúdo curto: {len(conteudo) if conteudo else 0}")
 
-            log(f"  📄 Conteúdo: {len(conteudo)} caracteres")
-
-            # Construir docx
-            supratitulo = meta['instituto']
-            subtitulo = f"{meta['escola']}  ·  Curso «{meta['curso']}»  ·  Módulo {meta['modulo']}"
-            docx_meta = {
-                "titulo": meta["titulo"],
-                "supratitulo": supratitulo,
-                "subtitulo": subtitulo,
-                "codigo": meta["codigo"],
-                "info_linha": f"Material didáctico oficial · Código {meta['codigo']} · 2026",
-            }
-
+            # 2. Construir docx
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             fname = f"{meta['codigo']}_{slugify(meta['titulo'])}.docx"
             output_path = os.path.join(OUTPUT_DIR, fname)
 
             log(f"  🏗️  Construindo .docx...")
+            docx_meta = {
+                "titulo": meta["titulo"],
+                "supratitulo": meta['instituto'],
+                "subtitulo": f"{meta['escola']}  ·  Curso «{meta['curso']}»  ·  Módulo {meta['modulo']}",
+                "codigo": meta["codigo"],
+                "info_linha": f"Material didáctico oficial · Código {meta['codigo']} · 2026",
+            }
             construir_docx(docx_meta, conteudo, output_path)
-
             size_kb = os.path.getsize(output_path) / 1024
-            log(f"  ✅ Criado: {fname} ({size_kb:.0f} KB)")
+            log(f"  ✅ .docx: {fname} ({size_kb:.0f} KB)")
 
+            # 3. Upload para Google Drive (imediatamente)
+            drive_info = None
+            if drive_ok:
+                log(f"  ☁️  Upload para Drive...")
+                try:
+                    drive_info = upload_para_drive(output_path, meta)
+                    if drive_info:
+                        log(f"  ✅ Drive: {drive_info.get('webViewLink', drive_info['id'])}")
+                except Exception as ue:
+                    log(f"  ⚠️  Upload falhou: {ue}")
+                    log(f"  {traceback.format_exc()}")
+
+            # 4. Actualizar estado
             geradas.append({
                 "id": meta["id"],
                 "codigo": meta["codigo"],
                 "titulo": meta["titulo"],
                 "ficheiro": fname,
-                "nivel": meta["nivel"],
                 "instituto": meta["instituto"],
                 "escola": meta["escola"],
                 "curso": meta["curso"],
                 "modulo": meta["modulo"],
+                "drive_id": drive_info['id'] if drive_info else "",
+                "drive_link": drive_info.get('webViewLink', '') if drive_info else "",
             })
 
             estado["concluidas"].append(meta["id"])
             estado["total_gerado"] = len(estado["concluidas"])
+            estado.setdefault("uploads", []).append(geradas[-1])
             salvar_estado(estado)
-            log(f"  💾 Estado actualizado: {estado['total_gerado']}/{mapa['total_apostilas']}")
+            log(f"  💾 Estado: {estado['total_gerado']}/{mapa['total_apostilas']}")
 
         except Exception as e:
             log(f"  ❌ ERRO: {e}")
-            log(f"  📍 Traceback:\n{traceback.format_exc()}")
+            log(f"  {traceback.format_exc()}")
             falhadas.append({"id": meta["id"], "erro": str(e)})
             estado.setdefault("falhadas", []).append(meta["id"])
             salvar_estado(estado)
@@ -522,22 +606,19 @@ def main():
 
     # Resumo
     log(f"\n{'=' * 60}")
-    log(f"  RESUMO: ✅ {len(geradas)} geradas | ❌ {len(falhadas)} falhadas")
+    log(f"  ✅ {len(geradas)} geradas | ❌ {len(falhadas)} falhadas")
     log(f"  Total: {len(estado.get('concluidas', []))}/{mapa['total_apostilas']}")
+    uploads_ok = sum(1 for g in geradas if g.get('drive_id'))
+    log(f"  ☁️  Uploads: {uploads_ok}/{len(geradas)}")
     log(f"{'=' * 60}")
 
     if geradas:
-        batch_path = os.path.join(os.path.dirname(ESTADO_PATH), "ultimo_batch.json")
+        batch_path = os.path.join(SCRIPT_DIR, "ultimo_batch.json")
         with open(batch_path, 'w', encoding='utf-8') as f:
             json.dump(geradas, f, ensure_ascii=False, indent=2)
-        log(f"💾 Batch salvo: {batch_path}")
 
-    # Exit code baseado em resultados
     if not geradas and falhadas:
-        log("❌ Nenhuma apostila gerada — a sair com erro")
         sys.exit(1)
-
-    return geradas
 
 
 if __name__ == "__main__":
