@@ -401,9 +401,10 @@ ESTRUTURA OBRIGATÓRIA:
 
 
 def gerar_conteudo_gemini(meta):
-    import google.genai as genai
+    import google.generativeai as genai
     log(f"  📡 Gemini API ({MODEL_NAME})...")
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(model_name=MODEL_NAME)
 
     prompt = f"""Escreva o conteúdo completo de uma apostila académica cristã em português (pt-PT/Angola).
 
@@ -449,11 +450,9 @@ ESTRUTURA OBRIGATÓRIA (não altere a ordem):
 """
 
     log(f"  📤 Prompt: {len(prompt)} chars")
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.types.GenerationConfig(
             temperature=0.8,
             max_output_tokens=16384,
             top_p=0.95,
