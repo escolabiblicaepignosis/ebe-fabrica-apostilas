@@ -1,0 +1,102 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Workflow: Geração Automática de Apostilas EBE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Gera apostilas usando Gemini AI e faz upload para Google Drive.
+#
+# LIMITES DO PLANO GRATUITO:
+#   GitHub Actions: 2.000 min/mês (privado) ou ilimitado (público)
+#   Gemini 2.5 Flash free: ~15 RPM, ~1M tokens/dia, ~1.500 RPD
+#
+# CONFIGURAÇÃO ATUAL:
+#   Batch: 3 apostilas/execução | Intervalo: 3min entre cada
+#   Cron: a cada 8h (3x/dia) → ~9 apostilas/dia → ~270/mês
+#   Tokens: ~75K/execução → ~225K/dia (dentro do limite de 1M)
+#   Minutos GitHub: ~12min/execução → ~36min/dia → ~1.080min/mês
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+name: "Gerar Apostilas EBE"
+
+on:
+  # Execução manual — para testes e controlo
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "Número de apostilas a gerar neste batch"
+        required: false
+        default: "3"
+        type: string
+      model:
+        description: "Modelo Gemini a usar"
+        required: false
+        default: "gemini-2.5-flash"
+        type: choice
+        options:
+          - "gemini-2.5-flash"
+          - "gemini-2.5-pro"
+          - "gemini-2.0-flash"
+
+  # Agendamento automático (a cada 8 horas)
+  schedule:
+    - cron: "0 */8 * * *"  # 00:00, 08:00, 16:00 UTC
+
+permissions:
+  contents: write
+
+env:
+  BATCH_SIZE: ${{ github.event.inputs.batch_size || '3' }}
+  GEMINI_MODEL: ${{ github.event.inputs.model || 'gemini-2.5-flash' }}
+
+jobs:
+  # ────────────────────────────────────────────────────────────
+  # JOB 1: Gerar apostilas com Gemini AI
+  # ────────────────────────────────────────────────────────────
+  gerar:
+    name: "📝 Gerar Apostilas"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: "📥 Checkout do repositório"
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "🐍 Configurar Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "📦 Instalar dependências"
+        run: pip install python-docx google-generativeai google-api-python-client google-auth google-auth-oauthlib
+
+      - name: "📝 Gerar apostilas com Gemini"
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/gerar_apostila.py
+
+      - name: "☁️ Upload para Google Drive"
+        env:
+          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: python scripts/upload_drive.py
+
+      - name: "💾 Commit do progresso"
+        run: |
+          git config user.name "EBE Bot"
+          git config user.email "bot@escolabiblicaepignosis.org"
+          git add scripts/estado.json scripts/ultimo_batch.json output/
+          git diff --staged --quiet || git commit -m "🤖 Apostilas geradas — batch $(date +'%Y-%m-%d %H:%M')"
+          git push
+
+      - name: "📊 Resumo"
+        if: always()
+        run: |
+          echo "## 📊 Resumo do Batch" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f scripts/estado.json ]; then
+            TOTAL=$(python3 -c "import json; e=json.load(open('scripts/estado.json')); print(len(e.get('concluidas',[])))")
+            echo "**Total gerado:** $TOTAL / 1029 apostilas" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "**Batch size:** ${{ env.BATCH_SIZE }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Modelo:** ${{ env.GEMINI_MODEL }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
