@@ -8,92 +8,53 @@ import json
 import os
 import sys
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+def log(msg):
+    print(msg, flush=True)
 
-# ──────────────────────────────────────────────────────────────
-# CONFIGURAÇÃO
-# ──────────────────────────────────────────────────────────────
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
 CREDENTIALS_JSON = os.environ.get("GOOGLE_DRIVE_CREDENTIALS", "")
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
-BATCH_PATH = os.path.join(os.path.dirname(__file__), "ultimo_batch.json")
-ESTADO_PATH = os.path.join(os.path.dirname(__file__), "estado.json")
-
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "output")
+BATCH_PATH = os.path.join(SCRIPT_DIR, "ultimo_batch.json")
+ESTADO_PATH = os.path.join(SCRIPT_DIR, "estado.json")
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 
-# ──────────────────────────────────────────────────────────────
-# AUTENTICAÇÃO
-# ──────────────────────────────────────────────────────────────
 def get_drive_service():
-    """Autentica no Google Drive usando Service Account."""
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
     if not CREDENTIALS_JSON:
         raise RuntimeError("GOOGLE_DRIVE_CREDENTIALS não definido")
-
-    # As credenciais vêm como JSON string (do GitHub Secret)
     creds_info = json.loads(CREDENTIALS_JSON)
-
-    credentials = service_account.Credentials.from_service_account_info(
-        creds_info, scopes=SCOPES
-    )
+    credentials = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
     return build("drive", "v3", credentials=credentials)
 
 
-# ──────────────────────────────────────────────────────────────
-# GESTÃO DE PASTAS
-# ──────────────────────────────────────────────────────────────
 def sanitizar_nome(nome):
-    """Remove caracteres problemáticos para nomes de pasta no Drive."""
-    # Remover aspas, pipes, barras
-    for char in ['"', "'", '/', '\\', '|', ':', '*']:
+    for char in ['"', "'", '/', '\\', '|', ':', '*', '?', '<', '>']:
         nome = nome.replace(char, '')
     return nome.strip()[:100]
 
 
 def encontrar_ou_criar_pasta(service, nome, parent_id):
-    """Encontra uma pasta existente ou cria uma nova no Drive."""
     nome = sanitizar_nome(nome)
-
-    # Buscar pasta existente
     query = (
-        f"name = '{nome}' and "
-        f"'{parent_id}' in parents and "
-        f"mimeType = 'application/vnd.google-apps.folder' and "
-        f"trashed = false"
+        f"name = '{nome}' and '{parent_id}' in parents and "
+        f"mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     )
-    results = service.files().list(
-        q=query,
-        spaces='drive',
-        fields='files(id, name)',
-        pageSize=10
-    ).execute()
-
+    results = service.files().list(q=query, spaces='drive', fields='files(id, name)', pageSize=10).execute()
     files = results.get('files', [])
     if files:
         return files[0]['id']
-
-    # Criar nova pasta
-    folder_metadata = {
-        'name': nome,
-        'mimeType': 'application/vnd.google-apps.folder',
-        'parents': [parent_id]
-    }
     folder = service.files().create(
-        body=folder_metadata,
+        body={'name': nome, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]},
         fields='id'
     ).execute()
-
-    print(f"    📁 Pasta criada: {nome}")
+    log(f"    📁 Pasta criada: {nome}")
     return folder['id']
 
 
 def garantir_caminho(service, parent_id, partes):
-    """
-    Garante que toda a hierarquia de pastas existe.
-    Retorna o ID da pasta final.
-    """
     current_id = parent_id
     for parte in partes:
         if parte:
@@ -101,75 +62,82 @@ def garantir_caminho(service, parent_id, partes):
     return current_id
 
 
-# ──────────────────────────────────────────────────────────────
-# UPLOAD
-# ──────────────────────────────────────────────────────────────
 def upload_ficheiro(service, file_path, file_name, folder_id):
-    """Faz upload de um ficheiro .docx para o Google Drive."""
-    file_metadata = {
-        'name': file_name,
-        'parents': [folder_id]
-    }
+    from googleapiclient.http import MediaFileUpload
     media = MediaFileUpload(
         file_path,
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         resumable=True
     )
-    file = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields='id, name, webViewLink'
+    return service.files().create(
+        body={'name': file_name, 'parents': [folder_id]},
+        media_body=media, fields='id, name, webViewLink'
     ).execute()
-
-    return file
 
 
 def processar_batch():
-    """Faz upload de todos os ficheiros do último batch."""
+    log("=" * 60)
+    log("  Upload para Google Drive")
+    log("=" * 60)
+
     if not DRIVE_FOLDER_ID:
-        print("❌ GOOGLE_DRIVE_FOLDER_ID não definido.")
+        log("❌ GOOGLE_DRIVE_FOLDER_ID não definido.")
         sys.exit(1)
+    log(f"✅ Pasta mãe: {DRIVE_FOLDER_ID}")
+
+    if not CREDENTIALS_JSON:
+        log("❌ GOOGLE_DRIVE_CREDENTIALS não definido.")
+        sys.exit(1)
+    log(f"✅ Credenciais: {len(CREDENTIALS_JSON)} chars")
+
+    log(f"📂 OUTPUT_DIR: {os.path.abspath(OUTPUT_DIR)}")
+    log(f"📂 Existe: {os.path.exists(OUTPUT_DIR)}")
+    if os.path.exists(OUTPUT_DIR):
+        log(f"📂 Conteúdo: {os.listdir(OUTPUT_DIR)}")
 
     if not os.path.exists(BATCH_PATH):
-        print("⚠️  Nenhum batch para fazer upload (ultimo_batch.json não encontrado)")
+        log("⚠️  Nenhum batch (ultimo_batch.json não encontrado)")
         return
 
     with open(BATCH_PATH, 'r', encoding='utf-8') as f:
         batch = json.load(f)
 
     if not batch:
-        print("⚠️  Batch vazio.")
+        log("⚠️  Batch vazio.")
         return
 
-    print("=" * 60)
-    print("  Upload para Google Drive")
-    print(f"  Pasta mãe: {DRIVE_FOLDER_ID}")
-    print(f"  Ficheiros: {len(batch)}")
-    print("=" * 60)
+    log(f"📋 Batch: {len(batch)} ficheiros")
 
     service = get_drive_service()
+    log("✅ Conectado ao Google Drive")
 
-    # Cache de pastas para evitar recriação
     pasta_cache = {}
     uploaded = []
 
     for idx, item in enumerate(batch, 1):
         fname = item["ficheiro"]
-        file_path = os.path.join(OUTPUT_DIR, fname)
+        abs_path = os.path.abspath(os.path.join(OUTPUT_DIR, fname))
 
-        if not os.path.exists(file_path):
-            print(f"  [{idx}] ⚠️  Ficheiro não encontrado: {fname}")
+        log(f"\n  [{idx}/{len(batch)}] {fname}")
+        log(f"    Path: {abs_path}")
+
+        if not os.path.exists(abs_path):
+            log(f"    ❌ Não encontrado!")
+            if os.path.exists(OUTPUT_DIR):
+                log(f"    Em output/: {os.listdir(OUTPUT_DIR)}")
             continue
 
-        # Montar hierarquia: Instituto > Escola > Curso > Módulo
+        size_kb = os.path.getsize(abs_path) / 1024
+        log(f"    Tamanho: {size_kb:.0f} KB")
+
         partes = [
             sanitizar_nome(item.get("instituto", "Outros")),
             sanitizar_nome(item.get("escola", "Geral")),
             sanitizar_nome(item.get("curso", "Curso")),
             sanitizar_nome(f"Módulo {item.get('modulo', '1')}"),
         ]
+        log(f"    Destino: {' / '.join(partes)}")
 
-        # Usar cache para evitar múltiplas buscas
         cache_key = " > ".join(partes)
         if cache_key in pasta_cache:
             folder_id = pasta_cache[cache_key]
@@ -177,33 +145,29 @@ def processar_batch():
             folder_id = garantir_caminho(service, DRIVE_FOLDER_ID, partes)
             pasta_cache[cache_key] = folder_id
 
-        print(f"  [{idx}/{len(batch)}] Upload: {fname}")
         try:
-            file = upload_ficheiro(service, file_path, fname, folder_id)
+            file = upload_ficheiro(service, abs_path, fname, folder_id)
             link = file.get('webViewLink', '')
-            print(f"    ✅ Enviado: {link}")
-            uploaded.append({
-                **item,
-                "drive_id": file['id'],
-                "drive_link": link,
-            })
+            log(f"    ✅ Enviado! ID: {file['id']}")
+            log(f"    🔗 {link}")
+            uploaded.append({**item, "drive_id": file['id'], "drive_link": link})
         except Exception as e:
-            print(f"    ❌ Erro no upload: {e}")
+            log(f"    ❌ Erro: {e}")
+            import traceback
+            log(f"    {traceback.format_exc()}")
 
-    # Atualizar estado com links do Drive
     if uploaded:
         estado = {}
         if os.path.exists(ESTADO_PATH):
             with open(ESTADO_PATH, 'r', encoding='utf-8') as f:
                 estado = json.load(f)
-
         estado.setdefault("uploads", []).extend(uploaded)
         with open(ESTADO_PATH, 'w', encoding='utf-8') as f:
             json.dump(estado, f, ensure_ascii=False, indent=2)
 
-    print(f"\n{'=' * 60}")
-    print(f"  ✅ Upload concluído: {len(uploaded)}/{len(batch)} ficheiros")
-    print(f"{'=' * 60}")
+    log(f"\n{'=' * 60}")
+    log(f"  ✅ Upload: {len(uploaded)}/{len(batch)} ficheiros")
+    log(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
