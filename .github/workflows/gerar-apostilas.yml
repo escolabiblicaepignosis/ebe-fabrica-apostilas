@@ -78,7 +78,7 @@ jobs:
         env:
           GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-        run: python scripts/upload_drive.py
+        run: python scripts/upload_drive.py    
 
       - name: "💾 Commit do progresso"
         run: |
