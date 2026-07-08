@@ -30,7 +30,6 @@ output/*.docx
 
 # Ficheiros temporários
 tmp/
-ultimo_batch.json
 
 # Logs
 *.log
