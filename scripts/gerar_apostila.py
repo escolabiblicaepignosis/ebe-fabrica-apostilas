@@ -38,7 +38,6 @@ COR_CITACAO    = RGBColor(0x55, 0x55, 0x55)
 HEX_PRIMARIA   = "1B3A5C"
 HEX_SECUNDARIA = "2E7D4F"
 FONTE          = "Garamond"
-
 ASSETS_DIR = os.path.join(SCRIPT_DIR, "..", "src", "estilos", "_assets")
 LOGO_PATH  = os.path.join(ASSETS_DIR, "logo_ebe.png")
 
@@ -52,6 +51,7 @@ def get_drive_service():
     global _drive_service
     if _drive_service:
         return _drive_service
+    log("    🔑 Autenticando no Google Drive...")
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     if not CREDENTIALS_JSON:
@@ -61,6 +61,7 @@ def get_drive_service():
         creds, scopes=["https://www.googleapis.com/auth/drive.file"]
     )
     _drive_service = build("drive", "v3", credentials=credentials)
+    log("    ✅ Autenticado no Google Drive")
     return _drive_service
 
 
@@ -83,12 +84,13 @@ def encontrar_ou_criar_pasta(service, nome, parent_id):
     ).execute()
     files = results.get('files', [])
     if files:
+        log(f"    📁 Pasta existe: {nome}")
         return files[0]['id']
+    log(f"    📁 Criando pasta: {nome}")
     folder = service.files().create(
         body={'name': nome, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]},
         fields='id'
     ).execute()
-    log(f"    📁 Pasta criada: {nome}")
     return folder['id']
 
 
@@ -102,12 +104,19 @@ def garantir_caminho(service, parent_id, partes):
 
 def upload_para_drive(file_path, meta):
     """Faz upload de um ficheiro .docx para o Google Drive."""
+    log(f"    📂 Ficheiro: {file_path}")
+    log(f"    📂 Existe: {os.path.exists(file_path)}")
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Ficheiro não encontrado: {file_path}")
+
+    size_kb = os.path.getsize(file_path) / 1024
+    log(f"    📂 Tamanho: {size_kb:.0f} KB")
+
     if not DRIVE_FOLDER_ID:
-        log("    ⚠️  GOOGLE_DRIVE_FOLDER_ID não definido — a saltar upload")
-        return None
+        raise RuntimeError("GOOGLE_DRIVE_FOLDER_ID não definido")
 
     from googleapiclient.http import MediaFileUpload
-
     service = get_drive_service()
 
     partes = [
@@ -116,15 +125,20 @@ def upload_para_drive(file_path, meta):
         sanitizar_nome(meta.get("curso", "Curso")),
         sanitizar_nome(f"Módulo {meta.get('modulo', '1')}"),
     ]
-    cache_key = " > ".join(partes)
+    log(f"    📂 Destino: {' / '.join(partes)}")
 
+    cache_key = " > ".join(partes)
     if cache_key in _pasta_cache:
         folder_id = _pasta_cache[cache_key]
+        log(f"    📂 Folder ID (cache): {folder_id}")
     else:
         folder_id = garantir_caminho(service, DRIVE_FOLDER_ID, partes)
         _pasta_cache[cache_key] = folder_id
+        log(f"    📂 Folder ID: {folder_id}")
 
     fname = os.path.basename(file_path)
+    log(f"    📤 Upload: {fname} → {folder_id}")
+
     media = MediaFileUpload(
         file_path,
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -135,6 +149,7 @@ def upload_para_drive(file_path, meta):
         media_body=media, fields='id, name, webViewLink'
     ).execute()
 
+    log(f"    ✅ Upload completo! ID: {file['id']}")
     return file
 
 
@@ -145,7 +160,6 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-
 
 def _add_horizontal_line(paragraph, color=HEX_PRIMARIA, size=8):
     p = paragraph._p
@@ -159,14 +173,12 @@ def _add_horizontal_line(paragraph, color=HEX_PRIMARIA, size=8):
     pBdr.append(bottom)
     pPr.append(pBdr)
 
-
 def page_break(doc):
     p = doc.add_paragraph()
     run = p.add_run()
     br = OxmlElement("w:br")
     br.set(qn("w:type"), "page")
     run._r.append(br)
-
 
 def configurar_estilos_base(doc):
     style = doc.styles["Normal"]
@@ -186,7 +198,6 @@ def configurar_estilos_base(doc):
         section.left_margin   = Cm(3.0)
         section.right_margin  = Cm(2.5)
 
-
 def inserir_logo(doc, caminho=None, largura_cm=5.5):
     caminho = caminho or LOGO_PATH
     if not os.path.exists(caminho):
@@ -195,7 +206,6 @@ def inserir_logo(doc, caminho=None, largura_cm=5.5):
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r = p.add_run()
     r.add_picture(caminho, width=Cm(largura_cm))
-
 
 def add_texto(doc, texto, font_size=12, bold=False, italic=False,
               color=None, alignment=None, indent_cm=0):
@@ -207,7 +217,6 @@ def add_texto(doc, texto, font_size=12, bold=False, italic=False,
     r.font.bold = bold; r.font.italic = italic
     if color: r.font.color.rgb = color
     return p
-
 
 def cabecalho_rodape(doc, titulo_doc, codigo_doc):
     for section in doc.sections:
@@ -236,13 +245,11 @@ def cabecalho_rodape(doc, titulo_doc, codigo_doc):
         run._r.append(fldChar2)
         run.font.name = FONTE; run.font.size = Pt(9); run.font.color.rgb = COR_CITACAO
 
-
 def slugify(texto):
     texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
     texto = re.sub(r'[^\w\s-]', '', texto).strip().lower()
     texto = re.sub(r'[\s_]+', '_', texto)
     return texto[:80]
-
 
 def construir_docx(meta, conteudo_md, output_path):
     doc = Document()
@@ -364,90 +371,49 @@ def construir_docx(meta, conteudo_md, output_path):
 # ──────────────────────────────────────────────────────────────
 # GEMINI
 # ──────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """Você é um teólogo, pedagogo e editor cristão sénior da Escola Bíblica Epignósis (EBE).
-Redija o conteúdo integral de uma apostila académica bíblica em português europeu/Angola (pt-PT).
-
-REGRAS:
-1. Use APENAS a Almeida Revista e Corrigida (ARC).
-2. 15-20 páginas (~6.000-8.000 palavras).
-3. Estilo académico formal, acessível e devocional.
-4. Todas as citações bíblicas com referência completa.
-5. Doutrinariamente protestante reformado/evangélico.
-6. Substância real em cada secção — sem placeholders.
-7. Grego/hebraico quando relevante (com transliteração).
-8. Escreva em Markdown (## títulos, **negrito**, > citações, - listas).
-
-ESTRUTURA OBRIGATÓRIA:
-## FICHA TÉCNICA
-## SUMÁRIO
-## APRESENTAÇÃO DA APOSTILA
-## OBJECTIVOS DE APRENDIZAGEM (Conhecer 40%, Crer 20%, Viver 20%, Servir 20%)
-## VERSÍCULO-CHAVE
-## TEXTO-BASE PARA LEITURA
-## 1. INTRODUÇÃO
-## 2. DESENVOLVIMENTO DO CONCEITO CENTRAL
-### 2.1 Fundamentos bíblicos
-### 2.2-2.4 Desenvolvimento temático
-### 2.5 Quadro de Destaque
-## 3. APLICAÇÃO PRÁTICA
-## 4. SÍNTESE E CONCLUSÃO
-## EXERCÍCIOS DE REVISÃO
-## ESTUDO BÍBLICO COMPLEMENTAR
-## PARA A PRÓXIMA APOSTILA
-## GLOSSÁRIO
-## BIBLIOGRAFIA RECOMENDADA
-## ANOTAÇÕES PESSOAIS
-"""
+SYSTEM_PROMPT = (
+    "Você é um teólogo, pedagogo e editor cristão sénior da Escola Bíblica Epignósis (EBE). "
+    "Redija conteúdo académico cristão original em português europeu/Angola (pt-PT). "
+    "Use referências bíblicas mas PARAfraseie o texto — não cite versículos longos palavra por palavra. "
+    "Para referências curtas (até 10 palavras), cite directamente. "
+    "Para passagens longas, resuma e indique a referência. "
+    "Estilo académico formal, acessível e devocional. "
+    "Use termos gregos/hebraicos quando relevante (com transliteração). "
+    "Escreva em Markdown."
+)
 
 
 def gerar_conteudo_gemini(meta):
     import google.generativeai as genai
     log(f"  📡 Gemini API ({MODEL_NAME})...")
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(model_name=MODEL_NAME)
 
-    prompt = f"""Escreva o conteúdo completo de uma apostila académica cristã em português (pt-PT/Angola).
+    # BUG FIX: passar system_instruction ao modelo
+    model = genai.GenerativeModel(
+        model_name=MODEL_NAME,
+        system_instruction=SYSTEM_PROMPT,
+    )
 
-CONTEXTO:
-- Instituto: {meta['instituto']}
-- Escola: {meta['escola']}
-- Curso: {meta['curso']} ({meta.get('carga_horaria', 'N/D')})
-- Módulo: {meta['modulo']}
-- Apostila: {meta['titulo']}
-- Código: {meta['codigo']}
-
-INSTRUÇÕES:
-- Escreva em estilo académico formal mas acessível
-- Use referências bíblicas (livro, capítulo, versículo) mas PARAFRASEIE o texto — não cite versículos longos palavra por palavra
-- Para referências curtas (até 10 palavras), pode citar directamente
-- Para passagens longas, resuma e refira a referência
-- Inclua fundamentação teológica real e profunda
-- Use termos gregos/hebraicos quando relevante (com transliteração)
-- Escreva em Markdown (## títulos, ### subtítulos, - listas, **negrito**, > citações curtas)
-
-ESTRUTURA OBRIGATÓRIA (não altere a ordem):
-## FICHA TÉCNICA
-## SUMÁRIO
-## APRESENTAÇÃO DA APOSTILA
-## OBJECTIVOS DE APRENDIZAGEM (Conhecer 40%, Crer 20%, Viver 20%, Servir 20%)
-## VERSÍCULO-CHAVE
-## TEXTO-BASE PARA LEITURA
-## 1. INTRODUÇÃO (2-3 parágrafos)
-## 2. DESENVOLVIMENTO DO CONCEITO CENTRAL
-### 2.1 Fundamentos bíblicos
-### 2.2 Desenvolvimento temático
-### 2.3 Aprofundamento
-### 2.4 Dúvidas comuns
-### 2.5 Quadro de Destaque
-## 3. APLICAÇÃO PRÁTICA (5 áreas: pessoal, família, igreja, sociedade, ministério)
-## 4. SÍNTESE E CONCLUSÃO
-## EXERCÍCIOS DE REVISÃO (3 blocos: Compreensão, Reflexão, Ministério)
-## ESTUDO BÍBLICO COMPLEMENTAR
-## PARA A PRÓXIMA APOSTILA
-## GLOSSÁRIO (5-10 termos)
-## BIBLIOGRAFIA RECOMENDADA (5-8 referências)
-## ANOTAÇÕES PESSOAIS
-"""
+    prompt = (
+        f"Escreva o conteúdo completo de uma apostila académica cristã.\n\n"
+        f"CONTEXTO:\n"
+        f"- Instituto: {meta['instituto']}\n"
+        f"- Escola: {meta['escola']}\n"
+        f"- Curso: {meta['curso']} ({meta.get('carga_horaria', 'N/D')})\n"
+        f"- Módulo: {meta['modulo']}\n"
+        f"- Apostila: {meta['titulo']}\n"
+        f"- Código: {meta['codigo']}\n\n"
+        f"ESTRUTURA OBRIGATÓRIA:\n"
+        f"## FICHA TÉCNICA\n## SUMÁRIO\n## APRESENTAÇÃO DA APOSTILA\n"
+        f"## OBJECTIVOS DE APRENDIZAGEM\n## VERSÍCULO-CHAVE\n## TEXTO-BASE PARA LEITURA\n"
+        f"## 1. INTRODUÇÃO\n## 2. DESENVOLVIMENTO DO CONCEITO CENTRAL\n"
+        f"### 2.1 Fundamentos bíblicos\n### 2.2 Desenvolvimento temático\n"
+        f"### 2.3 Aprofundamento\n### 2.4 Dúvidas comuns\n### 2.5 Quadro de Destaque\n"
+        f"## 3. APLICAÇÃO PRÁTICA\n## 4. SÍNTESE E CONCLUSÃO\n"
+        f"## EXERCÍCIOS DE REVISÃO\n## ESTUDO BÍBLICO COMPLEMENTAR\n"
+        f"## PARA A PRÓXIMA APOSTILA\n## GLOSSÁRIO\n## BIBLIOGRAFIA RECOMENDADA\n"
+        f"## ANOTAÇÕES PESSOAIS\n"
+    )
 
     log(f"  📤 Prompt: {len(prompt)} chars")
     response = model.generate_content(
@@ -492,16 +458,13 @@ def carregar_estado():
             return json.load(f)
     return {"concluidas": [], "falhadas": [], "total_gerado": 0, "uploads": []}
 
-
 def salvar_estado(estado):
     with open(ESTADO_PATH, 'w', encoding='utf-8') as f:
         json.dump(estado, f, ensure_ascii=False, indent=2)
 
-
 def carregar_mapa():
     with open(MAPA_PATH, 'r', encoding='utf-8') as f:
         return json.load(f)
-
 
 def obter_proximas_apostilas(mapa, estado, batch_size):
     concluidas = set(estado.get("concluidas", []))
@@ -546,8 +509,9 @@ def main():
     drive_ok = bool(DRIVE_FOLDER_ID and CREDENTIALS_JSON)
     if drive_ok:
         log(f"✅ Google Drive configurado (pasta: {DRIVE_FOLDER_ID[:12]}...)")
+        log(f"   CREDENTIALS: {len(CREDENTIALS_JSON)} chars")
     else:
-        log("⚠️  Google Drive não configurado — a gerar sem upload")
+        log(f"⚠️  Drive não configurado (FOLDER_ID={bool(DRIVE_FOLDER_ID)}, CREDS={bool(CREDENTIALS_JSON)})")
 
     if not os.path.exists(MAPA_PATH):
         log(f"❌ Mapa não encontrado: {MAPA_PATH}")
@@ -597,7 +561,7 @@ def main():
             size_kb = os.path.getsize(output_path) / 1024
             log(f"  ✅ .docx: {fname} ({size_kb:.0f} KB)")
 
-            # 3. Upload para Google Drive (imediatamente)
+            # 3. Upload para Google Drive
             drive_info = None
             if drive_ok:
                 log(f"  ☁️  Upload para Drive...")
@@ -606,11 +570,13 @@ def main():
                     if drive_info:
                         log(f"  ✅ Drive: {drive_info.get('webViewLink', drive_info['id'])}")
                 except Exception as ue:
-                    log(f"  ⚠️  Upload falhou: {ue}")
+                    log(f"  ❌ Upload ERRO: {ue}")
                     log(f"  {traceback.format_exc()}")
+            else:
+                log(f"  ⚠️  Upload ignorado (Drive não configurado)")
 
             # 4. Actualizar estado
-            geradas.append({
+            entry = {
                 "id": meta["id"],
                 "codigo": meta["codigo"],
                 "titulo": meta["titulo"],
@@ -621,11 +587,12 @@ def main():
                 "modulo": meta["modulo"],
                 "drive_id": drive_info['id'] if drive_info else "",
                 "drive_link": drive_info.get('webViewLink', '') if drive_info else "",
-            })
+            }
+            geradas.append(entry)
 
             estado["concluidas"].append(meta["id"])
             estado["total_gerado"] = len(estado["concluidas"])
-            estado.setdefault("uploads", []).append(geradas[-1])
+            estado.setdefault("uploads", []).append(entry)
             salvar_estado(estado)
             log(f"  💾 Estado: {estado['total_gerado']}/{mapa['total_apostilas']}")
 
@@ -645,7 +612,7 @@ def main():
     log(f"  ✅ {len(geradas)} geradas | ❌ {len(falhadas)} falhadas")
     log(f"  Total: {len(estado.get('concluidas', []))}/{mapa['total_apostilas']}")
     uploads_ok = sum(1 for g in geradas if g.get('drive_id'))
-    log(f"  ☁️  Uploads: {uploads_ok}/{len(geradas)}")
+    log(f"  ☁️  Drive: {uploads_ok}/{len(geradas)}")
     log(f"{'=' * 60}")
 
     if geradas:
@@ -655,7 +622,6 @@ def main():
 
     if not geradas and falhadas:
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
