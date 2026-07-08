@@ -75,18 +75,16 @@ jobs:
         run: python scripts/gerar_apostila.py
 
       - name: "☁️ Upload para Google Drive"
+        if: success()
+        continue-on-error: true
         env:
           GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-        run: python scripts/upload_drive.py    
+        run: python scripts/upload_drive.py
 
       - name: "💾 Commit do progresso"
-        run: |
-          git config user.name "EBE Bot"
-          git config user.email "bot@escolabiblicaepignosis.org"
-          git add scripts/estado.json scripts/ultimo_batch.json output/
-          git diff --staged --quiet || git commit -m "🤖 Apostilas geradas — batch $(date +'%Y-%m-%d %H:%M')"
-          git push
+        if: always()
+        run: bash scripts/commit_progresso.sh
 
       - name: "📊 Resumo"
         if: always()
