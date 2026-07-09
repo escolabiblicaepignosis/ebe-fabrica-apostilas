@@ -32,6 +32,8 @@ OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "output")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "5"))
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 DELAY_ENTRE_APOSTILAS = 90
+MAX_UPLOAD_RETRIES = 3
+UPLOAD_RETRY_DELAY = 5
 
 from docx.shared import RGBColor, Pt, Cm
 COR_PRIMARIA   = RGBColor(0x1B, 0x3A, 0x5C)
@@ -107,7 +109,8 @@ def test_drive_connection():
     try:
         service = get_drive_service()
     except Exception as e:
-        log(f"   ��� Falha na autenticação: {e}")
+        log(f"   ❌ Falha na autenticação: {e}")
+        log(f"   📋 Detalhes: {traceback.format_exc()}")
         return False
 
     # 3. Verificar pasta mãe
@@ -125,6 +128,7 @@ def test_drive_connection():
     except Exception as e:
         log(f"   ❌ Pasta não encontrada ou sem acesso: {e}")
         log(f"   💡 Verifique se a service account tem acesso à pasta {DRIVE_FOLDER_ID}")
+        log(f"   📋 Detalhes: {traceback.format_exc()}")
         return False
 
     # 4. Testar criação de subpasta
@@ -145,6 +149,7 @@ def test_drive_connection():
         log(f"   🧹 Subpasta de teste removida")
     except Exception as e:
         log(f"   ❌ Falha ao criar subpasta: {e}")
+        log(f"   📋 Detalhes: {traceback.format_exc()}")
         return False
 
     # 5. Testar upload de ficheiro pequeno
@@ -166,7 +171,7 @@ def test_drive_connection():
         log(f"   🧹 Ficheiro de teste removido")
     except Exception as e:
         log(f"   ❌ Falha no upload: {e}")
-        log(f"   {traceback.format_exc()}")
+        log(f"   📋 Detalhes: {traceback.format_exc()}")
         return False
 
     log(f"\n{'=' * 60}")
@@ -213,7 +218,7 @@ def garantir_caminho(service, parent_id, partes):
 
 
 def upload_para_drive(file_path, meta):
-    """Faz upload de um ficheiro .docx para o Google Drive."""
+    """Faz upload de um ficheiro .docx para o Google Drive com retry logic."""
     log(f"    📂 Ficheiro: {file_path}")
 
     if not os.path.exists(file_path):
@@ -248,18 +253,28 @@ def upload_para_drive(file_path, meta):
     fname = os.path.basename(file_path)
     log(f"    📤 A enviar: {fname} → folder {folder_id}")
 
-    media = MediaFileUpload(
-        file_path,
-        mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        resumable=True
-    )
-    file = service.files().create(
-        body={'name': fname, 'parents': [folder_id]},
-        media_body=media, fields='id, name, webViewLink'
-    ).execute()
+    # Retry logic para upload
+    for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
+        try:
+            media = MediaFileUpload(
+                file_path,
+                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                resumable=True
+            )
+            file = service.files().create(
+                body={'name': fname, 'parents': [folder_id]},
+                media_body=media, fields='id, name, webViewLink'
+            ).execute()
 
-    log(f"    ✅ Upload OK! ID: {file['id']}")
-    return file
+            log(f"    ✅ Upload OK! ID: {file['id']}")
+            return file
+        except Exception as e:
+            log(f"    ⚠️  Tentativa {attempt}/{MAX_UPLOAD_RETRIES} falhou: {type(e).__name__}: {e}")
+            if attempt < MAX_UPLOAD_RETRIES:
+                log(f"    ⏳ Aguardando {UPLOAD_RETRY_DELAY}s antes de tentar novamente...")
+                time.sleep(UPLOAD_RETRY_DELAY)
+            else:
+                raise
 
 
 # ──────────────────────────────────────────────────────────────
@@ -479,7 +494,7 @@ def construir_docx(meta, conteudo_md, output_path):
 
 # ──────────────────────────────────────────────────────────────
 # GEMINI
-# ──────────────────────────��───────────────────────────────────
+# ──────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = (
     "Você é um teólogo, pedagogo e editor cristão sénior da Escola Bíblica Epignósis (EBE). "
     "Redija conteúdo académico cristão original em português europeu/Angola (pt-PT). "
@@ -627,8 +642,9 @@ def main():
                 drive_ok = True
                 log(f"✅ Autenticação no Drive: sucesso")
             except Exception as e:
-                log(f"⚠️  Autenticação no Drive falhou: {e}")
+                log(f"⚠️  Autenticação no Drive falhou: {type(e).__name__}: {e}")
                 log(f"💡 A gerar apostilas SEM upload para Drive")
+                log(f"📋 Para diagnosticar: python scripts/gerar_apostila.py --test-drive")
         else:
             log(f"⚠️  Credenciais inválidas — a gerar SEM upload")
     else:
