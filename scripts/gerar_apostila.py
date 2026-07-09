@@ -32,7 +32,7 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 MAPA_PATH = os.path.join(SCRIPT_DIR, "mapa_apostilas.json")
 ESTADO_PATH = os.path.join(SCRIPT_DIR, "estado.json")
-OUTPUT_DIR = os.path.join(PROJECT_ROOT, "apostilas")
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "3"))
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 DELAY_ENTRE_APOSTILAS = 90  # segundos
@@ -293,14 +293,20 @@ def construir_docx(meta, conteudo_md, output_path):
 # GEMINI
 # ──────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = (
-    "Você é um teólogo, pedagogo e editor cristão sénior da Escola Bíblica Epignósis (EBE). "
-    "Redija conteúdo académico cristão original em português europeu/Angola (pt-PT). "
-    "Use referências bíblicas mas PARAfraseie o texto — não cite versículos longos palavra por palavra. "
-    "Para referências curtas (até 10 palavras), cite directamente. "
-    "Para passagens longas, resuma e indique a referência. "
-    "Estilo académico formal, acessível e devocional. "
-    "Use termos gregos/hebraicos quando relevante (com transliteração). "
-    "Escreva em Markdown."
+    "Você é o **Teólogo Mestre, Historiador e Pedagogo Sénior** da Escola Bíblica Epignósis (EBE). "
+    "Sua missão é produzir o conteúdo exaustivo para uma apostila académica cristã de alto nível. "
+    "\n\n### DIRECTRIZES DE OURO:\n"
+    "1. **Idioma e Ortografia:** Use exclusivamente o Português Europeu/Angola (pt-PT). "
+    "Mantenha um tom académico formal, mas com clareza pedagógica e unção devocional.\n"
+    "2. **Fidelidade Bíblica:** Use apenas a versão **Almeida Revista e Corrigida (ARC)**. "
+    "Não cite blocos gigantescos de texto; prefira a paráfrase analítica seguida da referência, "
+    "citando directamente apenas versículos-chave curtos.\n"
+    "3. **Profundidade e Extensão:** Esta é uma formação profunda. Explore etimologias (Grego/Hebraico com transliteração), "
+    "contexto histórico-cultural, geografia bíblica e debates teológicos clássicos. "
+    "O conteúdo deve ser denso o suficiente para gerar entre 15 a 20 páginas de texto útil.\n"
+    "4. **Arquitectura Epignósis:** Integre sempre as 4 dimensões: Conhecer (Exegese/Doutrina), "
+    "Crer (Fé/Convicção), Viver (Aplicação Prática) e Servir (Ministério/Reino).\n"
+    "5. **Formatação:** Use Markdown estruturado. Não use blocos de código para o texto."
 )
 
 
@@ -376,7 +382,7 @@ def carregar_mapa():
 
 def obter_proximas_apostilas(mapa, estado, batch_size):
     concluidas = set(estado.get("concluidas", []))
-    pendentes = []
+    todas = []
     for nivel in mapa["niveis"]:
         for inst in nivel["institutos"]:
             for escola in inst["escolas"]:
@@ -384,19 +390,22 @@ def obter_proximas_apostilas(mapa, estado, batch_size):
                     carga = curso.get("carga_horaria", "N/D")
                     for modulo in curso["modulos"]:
                         for apo in modulo["apostilas"]:
-                            if apo["id"] not in concluidas:
-                                pendentes.append({
-                                    "id": apo["id"],
-                                    "titulo": apo["titulo"],
-                                    "nivel": nivel["id"],
-                                    "instituto": inst["nome"],
-                                    "escola": escola["nome"],
-                                    "curso": curso["nome"],
-                                    "carga_horaria": carga,
-                                    "modulo": f"{modulo['numero']} — {modulo['nome']}",
-                                    "numero_apostila": apo["id"].split("-")[1].lstrip("0") or "1",
-                                    "codigo": apo["id"],
-                                })
+                            todas.append({
+                                "id": apo["id"],
+                                "titulo": apo["titulo"],
+                                "nivel": nivel["id"],
+                                "instituto": inst["nome"],
+                                "escola": escola["nome"],
+                                "curso": curso["nome"],
+                                "carga_horaria": carga,
+                                "modulo": f"{modulo['numero']} — {modulo['nome']}",
+                                "codigo": apo["id"],
+                            })
+    
+    # Ordenar por ID (APO-0001, APO-0002...) para garantir a sequência estrita
+    todas.sort(key=lambda x: x["id"])
+    
+    pendentes = [a for a in todas if a["id"] not in concluidas]
     return pendentes[:batch_size]
 
 
@@ -496,9 +505,10 @@ def main():
             size_kb = os.path.getsize(output_path) / 1024
             log(f"  ✅ .docx: {fname} ({size_kb:.0f} KB)")
 
-            # 3. Registar para commit
+            # 3. Registar progresso (docx será commitado se estiver na pasta correta)
             rel_path = os.path.relpath(output_path, PROJECT_ROOT)
-            arquivos_para_commit.append(rel_path)
+            if "apostilas/" in rel_path.replace("\\", "/"):
+                arquivos_para_commit.append(rel_path)
 
             # 4. Actualizar estado
             entry = {
@@ -532,12 +542,23 @@ def main():
             log(f"\n  ⏳ Aguardando {DELAY_ENTRE_APOSTILAS}s...")
             time.sleep(DELAY_ENTRE_APOSTILAS)
 
-    # 5. Commit all changes
-    if arquivos_para_commit:
-        log(f"\n{'─' * 70}")
-        log(f"  📤 Sincronizando {len(arquivos_para_commit)} ficheiro(s) com Git...")
-        mensagem = f"chore: {len(geradas)} apostila(s) gerada(s) — Total: {estado['total_gerado']}/1029"
-        git_commit_push(arquivos_para_commit, mensagem)
+    # 5. Sincronizar ficheiros com Git
+    progress_files = [
+        os.path.relpath(ESTADO_PATH, PROJECT_ROOT),
+    ]
+    batch_path = os.path.join(SCRIPT_DIR, "ultimo_batch.json")
+    if os.path.exists(batch_path):
+        progress_files.append(os.path.relpath(batch_path, PROJECT_ROOT))
+    
+    # Adicionar também as apostilas geradas se foram para a pasta 'apostilas/'
+    for f in arquivos_para_commit:
+        if f not in progress_files:
+            progress_files.append(f)
+
+    log(f"\n{'─' * 70}")
+    log(f"  📤 Sincronizando {len(progress_files)} ficheiro(s) com Git...")
+    mensagem = f"chore: progresso da geração — {len(geradas)} nova(s) — Total: {estado['total_gerado']}/1029"
+    git_commit_push(progress_files, mensagem)
 
     # Resumo Final
     log(f"\n{'=' * 70}")
