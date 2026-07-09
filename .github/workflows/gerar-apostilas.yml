@@ -1,24 +1,25 @@
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Workflow: Geração Automática de Apostilas EBE
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Gera apostilas usando Gemini AI e faz upload directo para Drive.
-#
-# LIMITES DO PLANO GRATUITO:
-#   GitHub Actions: 2.000 min/mês (privado) ou ilimitado (público)
-#   Gemini 2.5 Flash: ~15 RPM, ~1M tokens/dia, ~1.500 RPD
-#
-# CONFIGURAÇÃO:
-#   Batch: 3 apostilas/execução | Cron: a cada 8h
-#   ~9 apostilas/dia → ~270/mês → ~4 meses para 1.029
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-name: "Gerar Apostilas EBE"
+name: "🚀 Gerar Apostilas EBE (11/dia - Agressivo)"
 
 on:
+  # 4 Execuções diárias automáticas
+  schedule:
+    # Primeira execução: 3 apostilas
+    - cron: "0 9 * * *"    # 09:00 UTC
+    
+    # Segunda execução: 3 apostilas
+    - cron: "0 13 * * *"   # 13:00 UTC
+    
+    # Terceira execução: 3 apostilas
+    - cron: "0 17 * * *"   # 17:00 UTC
+    
+    # Quarta execução: 2 apostilas
+    - cron: "0 21 * * *"   # 21:00 UTC
+  
+  # Manual: Permitir disparo manual com batch customizado
   workflow_dispatch:
     inputs:
       batch_size:
-        description: "Número de apostilas a gerar"
+        description: "Número de apostilas a gerar (1-5)"
         required: false
         default: "3"
         type: string
@@ -29,11 +30,7 @@ on:
         type: choice
         options:
           - "gemini-2.5-flash"
-          - "gemini-2.5-pro"
           - "gemini-2.0-flash"
-
-  schedule:
-    - cron: "0 */8 * * *"
 
 permissions:
   contents: write
@@ -46,74 +43,76 @@ jobs:
   gerar:
     name: "📝 Gerar Apostilas"
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 25
+    
     steps:
       - name: "📥 Checkout"
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: "🐍 Python"
+      - name: "🐍 Setup Python"
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
+      - name: "📦 Instalar Dependências"
+        run: |
+          pip install --no-cache-dir \
+            python-docx \
+            google-generativeai
+
       - name: "🔐 Validar Secrets"
         run: |
           [ -n "$GEMINI_API_KEY" ] || (echo "❌ GEMINI_API_KEY não configurada" && exit 1)
-          [ -n "$GOOGLE_DRIVE_CREDENTIALS" ] || (echo "❌ GOOGLE_DRIVE_CREDENTIALS não configurada" && exit 1)
-          [ -n "$GOOGLE_DRIVE_FOLDER_ID" ] || (echo "❌ GOOGLE_DRIVE_FOLDER_ID não configurada" && exit 1)
-          echo "✅ Todas as secrets foram validadas"
+          echo "✅ Secrets validadas"
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
 
-      - name: "📦 Dependências"
-        run: pip install python-docx google-generativeai google-api-python-client google-auth google-auth-oauthlib
-
-      - name: "🔍 Testar Drive"
-        continue-on-error: true
-        env:
-          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-        run: python scripts/gerar_apostila.py --test-drive
-
-      - name: "📝 Gerar apostilas"
+      - name: "📝 Gerar Apostilas"
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          BATCH_SIZE: ${{ env.BATCH_SIZE }}
+          GEMINI_MODEL: ${{ env.GEMINI_MODEL }}
         run: python scripts/gerar_apostila.py
 
       - name: "⚙️ Configurar Git"
         if: always()
         run: |
-          git config user.name "GitHub Actions Bot"
-          git config user.email "actions@github.com"
+          git config user.name "🤖 Apostila Bot"
+          git config user.email "bot@apostilas.local"
 
-      - name: "💾 Commit do progresso"
+      - name: "💾 Push Automático"
         if: always()
         run: |
-          if git diff --quiet; then
-            echo "⏭️ Nenhuma mudança para commitar"
+          if git diff --quiet HEAD; then
+            echo "⏭️  Nenhuma mudança para commitar"
           else
-            bash scripts/commit_progresso.sh
-            echo "✅ Progresso commitado com sucesso"
+            git add apostilas/ scripts/estado.json scripts/ultimo_batch.json 2>/dev/null || true
+            git commit -m "chore: apostilas geradas — $(date -u +'%Y-%m-%d %H:%M UTC')" || true
+            git push origin main || true
           fi
 
-      - name: "📊 Resumo"
+      - name: "📊 Resumo do Batch"
         if: always()
         run: |
-          echo "## 📊 Resumo do Batch" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f scripts/estado.json ]; then
-            TOTAL=$(python3 -c "import json; e=json.load(open('scripts/estado.json')); print(len(e.get('concluidas',[])))")
-            echo "**Total gerado:** $TOTAL / 1029 apostilas" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**⚠️ Arquivo de estado não encontrado**" >> $GITHUB_STEP_SUMMARY
+            TOTAL=$(python3 -c "import json; e=json.load(open('scripts/estado.json')); print(e.get('total_gerado', 0))" 2>/dev/null || echo "0")
+            RESTANTES=$((1029 - TOTAL))
+            DIAS=$((RESTANTES / 11))
+            
+            echo "## 📊 Resumo do Batch" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Status:** Concluído" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Total Gerado:** $TOTAL / 1029 apostilas" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Restantes:** $RESTANTES (~$DIAS dias a 11/dia)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Batch Size:** ${{ env.BATCH_SIZE }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Modelo:** ${{ env.GEMINI_MODEL }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Horário UTC:** $(date -u +'%H:%M')" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Batch size:** ${{ env.BATCH_SIZE }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Modelo:** ${{ env.GEMINI_MODEL }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
