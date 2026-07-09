@@ -107,7 +107,7 @@ def test_drive_connection():
     try:
         service = get_drive_service()
     except Exception as e:
-        log(f"   ❌ Falha na autenticação: {e}")
+        log(f"   ��� Falha na autenticação: {e}")
         return False
 
     # 3. Verificar pasta mãe
@@ -479,7 +479,7 @@ def construir_docx(meta, conteudo_md, output_path):
 
 # ──────────────────────────────────────────────────────────────
 # GEMINI
-# ──────────────────────────────────────────────────────────────
+# ──────────────────────────��───────────────────────────────────
 SYSTEM_PROMPT = (
     "Você é um teólogo, pedagogo e editor cristão sénior da Escola Bíblica Epignósis (EBE). "
     "Redija conteúdo académico cristão original em português europeu/Angola (pt-PT). "
@@ -619,9 +619,18 @@ def main():
         ok_creds, msg_creds = validar_credenciais()
         log(f"{'✅' if ok_creds else '❌'} Credenciais: {msg_creds}")
         log(f"✅ DRIVE_FOLDER_ID: {DRIVE_FOLDER_ID[:12]}...")
-        drive_ok = ok_creds
-        if not drive_ok:
-            log("⚠️  Credenciais inválidas — a gerar SEM upload")
+        
+        # Tentar autenticar mesmo que validação falhe
+        if ok_creds:
+            try:
+                get_drive_service()
+                drive_ok = True
+                log(f"✅ Autenticação no Drive: sucesso")
+            except Exception as e:
+                log(f"⚠️  Autenticação no Drive falhou: {e}")
+                log(f"💡 A gerar apostilas SEM upload para Drive")
+        else:
+            log(f"⚠️  Credenciais inválidas — a gerar SEM upload")
     else:
         log(f"⚠️  Drive não configurado (FOLDER_ID={bool(DRIVE_FOLDER_ID)}, CREDS={bool(CREDENTIALS_JSON)})")
 
@@ -684,6 +693,7 @@ def main():
                 except Exception as ue:
                     log(f"  ❌ UPLOAD FALHOU: {type(ue).__name__}: {ue}")
                     log(f"  {traceback.format_exc()}")
+                    log(f"  💡 Apostila gerada localmente mas não enviada para Drive")
             else:
                 log(f"  ⚠️  Upload ignorado (Drive não disponível)")
 
