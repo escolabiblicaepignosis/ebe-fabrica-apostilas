@@ -56,6 +56,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+
+      - name: "🔐 Validar Secrets"
+        run: |
+          [ -n "$GEMINI_API_KEY" ] || (echo "❌ GEMINI_API_KEY não configurada" && exit 1)
+          [ -n "$GOOGLE_DRIVE_CREDENTIALS" ] || (echo "❌ GOOGLE_DRIVE_CREDENTIALS não configurada" && exit 1)
+          [ -n "$GOOGLE_DRIVE_FOLDER_ID" ] || (echo "❌ GOOGLE_DRIVE_FOLDER_ID não configurada" && exit 1)
+          echo "✅ Todas as secrets foram validadas"
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
 
       - name: "📦 Dependências"
         run: pip install python-docx google-generativeai google-api-python-client google-auth google-auth-oauthlib
@@ -74,9 +86,21 @@ jobs:
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: python scripts/gerar_apostila.py
 
+      - name: "⚙️ Configurar Git"
+        if: always()
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
       - name: "💾 Commit do progresso"
         if: always()
-        run: bash scripts/commit_progresso.sh
+        run: |
+          if git diff --quiet; then
+            echo "⏭️ Nenhuma mudança para commitar"
+          else
+            bash scripts/commit_progresso.sh
+            echo "✅ Progresso commitado com sucesso"
+          fi
 
       - name: "📊 Resumo"
         if: always()
@@ -86,7 +110,10 @@ jobs:
           if [ -f scripts/estado.json ]; then
             TOTAL=$(python3 -c "import json; e=json.load(open('scripts/estado.json')); print(len(e.get('concluidas',[])))")
             echo "**Total gerado:** $TOTAL / 1029 apostilas" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**⚠️ Arquivo de estado não encontrado**" >> $GITHUB_STEP_SUMMARY
           fi
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Batch size:** ${{ env.BATCH_SIZE }}" >> $GITHUB_STEP_SUMMARY
           echo "**Modelo:** ${{ env.GEMINI_MODEL }}" >> $GITHUB_STEP_SUMMARY
           echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
