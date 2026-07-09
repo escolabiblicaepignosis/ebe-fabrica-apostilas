@@ -47,6 +47,13 @@ env:
   GEMINI_MODEL: ${{ github.event.inputs.model || 'gemini-2.5-flash' }}
 
 jobs:
+  
+- name: "🔍 Testar conexão ao Drive"
+  env:
+      GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+      GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+   run: python scripts/gerar_apostila.py --test-drive
+  
   # ────────────────────────────────────────────────────────────
   # JOB 1: Gerar apostilas com Gemini AI
   # ────────────────────────────────────────────────────────────
@@ -75,6 +82,7 @@ jobs:
           GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: python scripts/gerar_apostila.py
+      
       - name: "☁️ Upload para Google Drive"
         if: success()
         continue-on-error: true
